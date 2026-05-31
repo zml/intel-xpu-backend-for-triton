@@ -43,7 +43,7 @@ unsigned allocationAnalysisScratchSizeFn(Operation *op) {
                                    : size;
       })
       .Case<ReduceOp>(
-          [](auto op) { return ReduceOpHelper(op).getScratchSizeInBytesOld(); })
+          [](auto op) { return ReduceOpHelper(op).getScratchSizeInBytes(); })
       .Default([](Operation *op) {
         return defaultAllocationAnalysisScratchSizeFn(op);
       });
