@@ -114,3 +114,12 @@ jobs:
 
           mkdir -p ~/.ccache
           du -h -d 1 ~/.ccache
+      - name: Save build dependencies cache
+        if: github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.triton/llvm
+            ~/.triton/nvidia
+            ~/.triton/json
+          key: ${{ steps.restore-build-deps-cache.outputs.cache-primary-key }}
