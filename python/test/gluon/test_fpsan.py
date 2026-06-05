@@ -2068,29 +2068,45 @@ def test_tmem_copy_scales_in_warp_specialize_partition(device, fresh_knobs):
         pass
 
     @gluon.jit
-    def kernel(in_ptr, out_ptr):
-        blocked: gl.constexpr = gl.BlockedLayout([1, 4], [32, 1], [gl.num_warps(), 1], [1, 0])
+    def kernel(in_ptr, out_ptr, TWO_CTAS: gl.constexpr):
+        if TWO_CTAS:
+            mma_a_layout: gl.constexpr = gl.NVMMASharedLayout.get_default_for([256, 64], gl.float32,
+                                                                              cga_layout=((1, 0), ))
+            mma_b_layout: gl.constexpr = gl.NVMMASharedLayout.get_default_for([64, 128], gl.float32,
+                                                                              cga_layout=((0, 1), ))
+            mma_a = gl.allocate_shared_memory(gl.float32, [256, 64], mma_a_layout)
+            mma_b = gl.allocate_shared_memory(gl.float32, [64, 128], mma_b_layout)
+            mma_acc_layout: gl.constexpr = TensorMemoryLayout((128, 128), col_stride=1, cga_layout=((1, 0), ),
+                                                              two_ctas=True)
+            mma_acc = allocate_tensor_memory(gl.float32, [256, 128], mma_acc_layout)
+            tcgen05_mma(mma_a, mma_b, mma_acc, use_acc=False)
+
+        cga_layout: gl.constexpr = ((0, 0), ) if TWO_CTAS else ()
+        blocked: gl.constexpr = gl.BlockedLayout([1, 4], [32, 1], [gl.num_warps(), 1], [1, 0], cga_layout=cga_layout)
         in_ptrs = (in_ptr + gl.arange(0, SMEM_H)[:, None] * SMEM_W + gl.arange(0, SMEM_W)[None, :])
         value = gl.load(gl.set_auto_layout(in_ptrs, blocked))
 
-        smem_layout: gl.constexpr = gl.SharedLinearLayout(offset_bases=[
-            [0, 1],
-            [0, 2],
-            [32, 0],
-            [0, 4],
-            [1, 0],
-            [2, 0],
-            [4, 0],
-            [8, 0],
-            [16, 0],
-            [0, 8],
-        ])
+        smem_layout: gl.constexpr = gl.SharedLinearLayout(
+            offset_bases=[
+                [0, 1],
+                [0, 2],
+                [32, 0],
+                [0, 4],
+                [1, 0],
+                [2, 0],
+                [4, 0],
+                [8, 0],
+                [16, 0],
+                [0, 8],
+            ],
+            block_bases=cga_layout,
+        )
         smem = gl.allocate_shared_memory(gl.int8, (SMEM_H, SMEM_W), layout=smem_layout)
         smem.store(value)
 
-        tmem_layout: gl.constexpr = TensorMemoryScalesLayout()
+        tmem_layout: gl.constexpr = TensorMemoryScalesLayout(cga_layout=cga_layout)
         tmem = allocate_tensor_memory(gl.int8, (SMEM_H, SMEM_W), layout=tmem_layout)
-        bar = gl.allocate_shared_memory(gl.int64, [1], gl.constexpr(mbarrier.MBarrierLayout()))
+        bar = mbarrier.allocate_mbarrier()
         mbarrier.init(bar, count=1)
 
         gl.warp_specialize(
@@ -2108,7 +2124,7 @@ def test_tmem_copy_scales_in_warp_specialize_partition(device, fresh_knobs):
 
     x = torch.randint(size=(smem_h, smem_w), low=-100, high=100, dtype=torch.int8, device=device)
     out = torch.empty((), device=device, dtype=torch.int32)
-    kernel[(1, )](x, out, num_warps=4)
+    kernel[(1, )](x, out, TWO_CTAS=two_ctas, num_warps=4, num_ctas=2 if two_ctas else 1)
     torch.testing.assert_close(out, torch.ones_like(out))
 
 
