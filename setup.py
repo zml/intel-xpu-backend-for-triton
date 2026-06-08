@@ -363,6 +363,8 @@ class CMakeBuild(build_ext):
             "TRITON_CUPTI_INCLUDE_PATH",
             "TRITON_CUPTI_LIB_PATH",
             "TRITON_CUPTI_LIB_BLACKWELL_PATH",
+            "TRITON_ROCPROFILER_SDK_INCLUDE_PATH",
+            "TRITON_ROCPROFILER_SDK_LIB_PATH",
             "TRITON_NVDISASM_PATH",
             "TRITON_PTXAS_PATH",
             "TRITON_PTXAS_BLACKWELL_PATH",
