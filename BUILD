@@ -583,6 +583,7 @@ cc_library(
     ]) + [
         "include/triton/Conversion/TritonGPUToLLVM/TargetInfoBase.h",  # Avoid circular dependency.
         "include/triton/Conversion/TritonGPUToLLVM/Utility.h",  # Avoid circular dependency.
+        "lib/Dialect/TritonGPU/Transforms/DescriptorMemoryLayouts.cpp",  # Avoid circular dependency.
         "lib/Dialect/TritonGPU/Transforms/Utility.cpp",  # Avoid circular dependency.
         "lib/Dialect/TritonNvidiaGPU/Transforms/TMAUtilities.cpp",  # Avoid circular dependency.
     ],
@@ -598,10 +599,12 @@ cc_library(
         "third_party/intel/include/**/*.h",
     ]) + [
         "include/triton/Dialect/TritonNvidiaGPU/Transforms/TMAUtilities.h",  # Avoid circular dependency.
+        "include/triton/Dialect/TritonGPU/Transforms/DescriptorMemoryLayouts.h",  # Avoid circular dependency.
         "include/triton/Dialect/TritonGPU/Transforms/Utility.h",  # Avoid circular dependency.
         # What is this lone header doing rooted under Conversion? Best to add it to Dialect, but
         # it would be better if upstream moved it there.
         "include/triton/Conversion/MLIRTypes.h",
+        "include/triton/Dialect/TritonInstrument/Transforms/ConSanTargetHooks.h",
     ],
     copts = select({
         ":compiler_is_msvc": [],
