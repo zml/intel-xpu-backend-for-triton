@@ -16,6 +16,19 @@ namespace mlir::triton::intel {
 #define GEN_PASS_DECL
 #include "intel/include/Dialect/Triton/Transforms/Passes.h.inc"
 
+// Compatibility aliases for XLA integrations pinned to older Intel pass names.
+inline std::unique_ptr<::mlir::Pass> createTritonIntelBlockPointerToTensorDesc() {
+  return createTritonRewriteTensorDescriptorToPointer();
+}
+
+inline std::unique_ptr<::mlir::Pass> createTritonIntelTensorDescToBlockPointer() {
+  return createTritonRewriteTensorDescriptorToPointer();
+}
+
+inline std::unique_ptr<::mlir::Pass> createTritonIntelRemoveBoundaryChecks() {
+  return createTritonIntelRemoveMasks();
+}
+
 /// Generate the code for registering passes.
 #define GEN_PASS_REGISTRATION
 #include "intel/include/Dialect/Triton/Transforms/Passes.h.inc"

@@ -10,11 +10,17 @@
 #define TRITON_DIALECT_TRITON_INTEL_GPU_TRANSFORMS_PASSES_H
 
 #include "mlir/Pass/Pass.h"
+#include "triton/Dialect/TritonGPU/Transforms/Passes.h"
 
 namespace mlir::triton::gpu::intel {
 
 #define GEN_PASS_DECL
 #include "intel/include/Dialect/TritonIntelGPU/Transforms/Passes.h.inc"
+
+// Compatibility alias for XLA integrations pinned to the older Intel pass name.
+inline std::unique_ptr<::mlir::Pass> createTritonIntelGPUCoalesce() {
+  return ::mlir::triton::gpu::createTritonGPUCoalesce();
+}
 
 /// Generate the code for registering passes.
 #define GEN_PASS_REGISTRATION
