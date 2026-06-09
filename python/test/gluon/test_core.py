@@ -4531,10 +4531,11 @@ def mma_scaled_tcgen05_copy(A, B, A_scale, B_scale, VEC_SIZE, BLOCK_M, BLOCK_N, 
 
 @pytest.mark.parametrize("M, N, K", [(2048, 2048, 4096)])
 @pytest.mark.parametrize("BLOCK_K", [128, 256])
-@pytest.mark.parametrize("a_format, b_format", [
-    ("mxfp8", "mxfp8"),
-    ("nvfp4", "nvfp4"),
-    ("mxfp8", "mxfp4"),
+@pytest.mark.parametrize("a_format, b_format, VEC_SIZE", [
+    pytest.param("mxfp8", "mxfp8", 32, id="mxfp8_mxfp8_block32"),
+    pytest.param("nvfp4", "nvfp4", 16, id="nvfp4_nvfp4_block16"),
+    pytest.param("mxfp4", "mxfp8", 32, id="mxfp4_mxfp8_block32"),
+    pytest.param("mxfp8", "mxfp4", 32, id="mxfp8_mxfp4_block32"),
 ])
 @pytest.mark.parametrize("ctas_per_cga", [(1, 1), (2, 1), (4, 1), (2, 2), (4, 2), (4, 4)])
 @pytest.mark.parametrize("multicast", [True, False])
@@ -4545,7 +4546,6 @@ def test_mma_scaled_tcgen05_copy(M, N, K, BLOCK_K, a_format, b_format, ctas_per_
     torch.manual_seed(0)
     A, A_scale, A_ref = random_quantized_tensor(M, K, a_format)
     B, B_scale, B_ref = random_quantized_tensor(N, K, b_format)
-    VEC_SIZE = 16 if a_format == "nvfp4" else 32
     A_scale = swizzle_scales_packed_block(A_scale, VEC_SIZE)
     B_scale = swizzle_scales_packed_block(B_scale, VEC_SIZE)
     C_ref = A_ref @ B_ref.T
