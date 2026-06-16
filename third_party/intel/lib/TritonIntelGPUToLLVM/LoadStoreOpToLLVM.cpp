@@ -3,10 +3,12 @@
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/TypeUtilities.h"
 #include "triton/Tools/LayoutUtils.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/TypeSwitch.h"
 
@@ -21,6 +23,7 @@
 #include "intel/include/Dialect/TritonIntelGPU/Transforms/Utility.h"
 #include "intel/include/Utils/Utility.h"
 #include "triton/Tools/LinearLayout.h"
+#include <iterator>
 #include <limits>
 #include <optional>
 #include <triton/Tools/Sys/GetEnv.h>
@@ -36,6 +39,27 @@ namespace {
 
 unsigned getCanonicalIndex(unsigned index, unsigned freeVarMask) {
   return index & ~freeVarMask;
+}
+
+static bool hasMultipleBlocks(Region &region) {
+  return !region.empty() && std::next(region.begin()) != region.end();
+}
+
+static bool requiresControlFlowPredication(Operation *op) {
+  for (Operation *parent = op->getParentOp(); parent;
+       parent = parent->getParentOp()) {
+    if (isa<triton::FuncOp, LLVM::LLVMFuncOp>(parent)) {
+      return llvm::any_of(parent->getRegions(), [](Region &region) {
+        return hasMultipleBlocks(region);
+      });
+    }
+
+    if (parent->getNumRegions() != 0) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 /// Unpacked tensor descriptor fields: { shape[rank], stride[rank], base }.
@@ -444,10 +468,16 @@ struct LoadStoreConversionBase {
     // predicates as effectively as the control-flow-based approach. Both can be
     // overridden by env vars. Predicated store is enabled by default for both
     // op types.
-    static const std::optional<bool> usePredicatedLoad =
+    const std::optional<bool> usePredicatedLoad =
         tools::isEnvValueBool(tools::getStrEnv("TRITON_INTEL_PREDICATED_LOAD"));
-    static const std::optional<bool> usePredicatedStore = tools::isEnvValueBool(
+    const std::optional<bool> usePredicatedStore = tools::isEnvValueBool(
         tools::getStrEnv("TRITON_INTEL_PREDICATED_STORE"));
+
+    // Keep nontrivial CFG/early-return kernels on control-flow predication:
+    // the branch form is the closest lowering to Triton semantics and avoids
+    // inactive program lanes executing masked memory ops after an early return.
+    if (requiresControlFlowPredication(op))
+      return false;
 
     // SPIRV predicated load/store does not support volatile qualifier.
     if constexpr (std::is_same_v<OpType, LoadOp>) {
