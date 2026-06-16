@@ -146,26 +146,33 @@ static void populateOpPatterns(LLVMTypeConverter &converter,
                                RewritePatternSet &patterns, StringRef f32Func,
                                StringRef f64Func) {
   patterns.add<ScalarizeVectorOpLowering<OpTy>>(converter);
-  patterns.add<OpToFuncCallLowering<OpTy>>(converter, f32Func, f64Func);
+  patterns.add<IntelOpToFuncCallLowering<OpTy>>(converter, f32Func, f64Func);
 }
 
 void mlir::triton::populateGPUToTritonGENConversionPatterns(
-    LLVMTypeConverter &converter, RewritePatternSet &patterns) {
+    LLVMTypeConverter &converter, RewritePatternSet &patterns,
+    bool includeMathPatterns) {
   populateWithGenerated(patterns);
   patterns.add<GPUFuncOpLowering>(
       converter,
       /*allocaAddrSpace=*/TritonGEN::TritonGENMemorySpace::kFunction,
       /*workgroupAddrSpace=*/TritonGEN::TritonGENMemorySpace::kWorkgroup);
 
-  const llvm::StringRef prefix("_Z15__spirv_ocl_");
-  populateOpPatterns<math::ExpOp>(converter, patterns, (prefix + "expf").str(),
-                                  (prefix + "expd").str());
-  populateOpPatterns<math::LogOp>(converter, patterns, (prefix + "logf").str(),
-                                  (prefix + "logd").str());
-  populateOpPatterns<math::CosOp>(converter, patterns, (prefix + "cosf").str(),
-                                  (prefix + "cosd").str());
-  populateOpPatterns<math::SinOp>(converter, patterns, (prefix + "sinf").str(),
-                                  (prefix + "sind").str());
+  if (!includeMathPatterns)
+    return;
+
+  populateOpPatterns<math::ExpOp>(converter, patterns,
+                                  "_Z15__spirv_ocl_expf",
+                                  "_Z15__spirv_ocl_expd");
+  populateOpPatterns<math::LogOp>(converter, patterns,
+                                  "_Z15__spirv_ocl_logf",
+                                  "_Z15__spirv_ocl_logd");
+  populateOpPatterns<math::CosOp>(converter, patterns,
+                                  "_Z15__spirv_ocl_cosf",
+                                  "_Z15__spirv_ocl_cosd");
+  populateOpPatterns<math::SinOp>(converter, patterns,
+                                  "_Z15__spirv_ocl_sinf",
+                                  "_Z15__spirv_ocl_sind");
 
   populateOpPatterns<math::AbsFOp>(converter, patterns, "__imf_fabsf",
                                    "__imf_fabs");

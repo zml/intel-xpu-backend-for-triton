@@ -5,7 +5,9 @@
 #include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
 #include "mlir/Dialect/Index/IR/IndexDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/SPIRV/IR/SPIRVDialect.h"
+#include "mlir/Transforms/DialectConversion.h"
 
 #include "intel/include/Analysis/AxisInfoExt.h"
 #include "intel/include/Analysis/StrideInfo.h"
@@ -50,6 +52,7 @@ public:
     addIllegalDialect<triton::gpu::TritonGPUDialect>();
     addIllegalDialect<triton::gpu::intel::TritonIntelGPUDialect>();
     addIllegalDialect<mlir::gpu::GPUDialect>();
+    addIllegalDialect<math::MathDialect>();
     addLegalOp<mlir::UnrealizedConversionCastOp>();
     addDynamicallyLegalOp<LLVM::CallOp>([](LLVM::CallOp op) {
       return op.getCConv() == triton::gpu::intel::getRequiredCConv(op);

@@ -1347,25 +1347,9 @@ cc_library(
     ],
 )
 
-genrule(
-    name = "intel_reduce_op_to_llvm_stub_gen",
-    outs = ["third_party/intel/lib/TritonIntelGPUToLLVM/ReduceOpToLLVMStub.cpp"],
-    cmd = "cat > $@ <<'EOF'\n" +
-          "#include \"PatternTritonGPUOpToLLVM.h\"\n" +
-          "namespace mlir::triton::intel {\n" +
-          "void populateReduceOpToLLVMPatterns(LLVMTypeConverter&, RewritePatternSet&, const TargetInfoBase&, PatternBenefit) {}\n" +
-          "}  // namespace mlir::triton::intel\n" +
-          "EOF\n",
-)
-
 cc_library(
     name = "TritonIntelGPUToLLVM",
-    srcs = glob(
-        ["third_party/intel/lib/TritonIntelGPUToLLVM/**/*.cpp"],
-        exclude = [
-            "third_party/intel/lib/TritonIntelGPUToLLVM/ReduceOpToLLVM.cpp",
-        ],
-    ) + [":intel_reduce_op_to_llvm_stub_gen"],
+    srcs = glob(["third_party/intel/lib/TritonIntelGPUToLLVM/**/*.cpp"]),
     hdrs = glob(["third_party/intel/include/TritonIntelGPUToLLVM/*.h", "third_party/intel/lib/TritonIntelGPUToLLVM/**/*.h"]),
     includes = [
         "third_party",

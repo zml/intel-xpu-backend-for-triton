@@ -86,49 +86,8 @@ public:
 
     // Step 3: reduce across warps.
 #if TRITON_INTEL_REDUCE_USE_COMMON_CROSS_WARP
-    // If we still need to reduce along warps / blocks:
-    // Create temporary layout for reduction within warps.
-    // By construction of tmpLl, we will iterate at most 2 times, as the maximum
-    // number of warp / block bases is 64 * 16 = 32 * 32
-    // That is, they fit in 2 rounds of warp reductions
-    // Even more, if we do two rounds, getInterLayout will make sure that the
-    // first one does not cross CTAs
-    auto kAxis = *(regLl.getOutDimNames().begin() + axis);
-    auto kBlock = StringAttr::get(ctx, "block");
-    bool lastCvtCrossesCTAs = false;
-    int i = 0;
-    while (regLl.getOutDimSize(kAxis) != 1) {
-      LinearLayout tmpLl = ReduceOpHelper::getInterLayout(regLl, axis);
-
-      // Emit a barrier if we are reusing the shmem
-      if (i > 0) {
-        sync(rewriter, loc, lastCvtCrossesCTAs);
-      }
-      accs = convertLayoutValues(loc, rewriter, op, regLl, tmpLl, accs);
-      lastCvtCrossesCTAs = !mlir::isCvtDimSync(regLl, tmpLl, kBlock);
-
-      std::tie(regLl, accs) =
-          reduceWithinWarps(op, std::move(tmpLl), std::move(accs), rewriter);
-      ++i;
-    }
-    assert(i <= 2 && "expected at most 2 rounds of warp reductions");
-    // Remove the axis dimension, which at this point is of size 1
-    regLl = removeStandardDim(regLl, axis);
-
-    // Convert to output layout if we didn't fit the warp bases within zero
-    // bases in the tmpLl
-    if (auto resultTy =
-            dyn_cast<RankedTensorType>(op.getResult()[0].getType())) {
-      auto outputLayout = triton::gpu::toLinearLayout(resultTy);
-      if (regLl != outputLayout) {
-        // Reuse the shmem
-        sync(rewriter, loc, lastCvtCrossesCTAs);
-        accs =
-            convertLayoutValues(loc, rewriter, op, regLl, outputLayout, accs);
-      }
-    }
-
-    packResults(op, accs, rewriter);
+    return lowerWithCommonCrossWarp(op, std::move(regLl), std::move(accs),
+                                    rewriter);
 #else
 
     if (!helper.isReduceWithinCTA())
@@ -138,7 +97,7 @@ public:
     std::map<SmallVector<unsigned>, SmallVector<Value>> intelAccs;
     std::map<SmallVector<unsigned>, SmallVector<Value>> indices;
 
-    // Scatter to Intel’s canonical maps.
+    // Scatter to Intel's canonical maps.
     if (failed(scatterReducedRegsToAccsAndIndices(
             op, helper, regLl, accs, intelAccs, indices, rewriter)))
       return failure();
@@ -156,6 +115,60 @@ public:
 
 private:
   const TargetInfoBase &targetInfo;
+
+  LogicalResult
+  lowerWithCommonCrossWarp(triton::ReduceOp op, LinearLayout regLl,
+                           SmallVector<SmallVector<Value>> accs,
+                           ConversionPatternRewriter &rewriter) const {
+    Location loc = op->getLoc();
+    unsigned axis = op.getAxis();
+    auto *ctx = op.getContext();
+
+    // If we still need to reduce along warps / blocks:
+    // Create temporary layout for reduction within warps.
+    // By construction of tmpLl, we will iterate at most 2 times, as the maximum
+    // number of warp / block bases is 64 * 16 = 32 * 32.
+    // That is, they fit in 2 rounds of warp reductions. Even more, if we do two
+    // rounds, getInterLayout will make sure that the first one does not cross
+    // CTAs.
+    auto kAxis = *(regLl.getOutDimNames().begin() + axis);
+    auto kBlock = StringAttr::get(ctx, "block");
+    bool lastCvtCrossesCTAs = false;
+    int i = 0;
+    while (regLl.getOutDimSize(kAxis) != 1) {
+      LinearLayout tmpLl = ReduceOpHelper::getInterLayout(regLl, axis);
+
+      // Emit a barrier if we are reusing the shmem.
+      if (i > 0) {
+        sync(rewriter, loc, lastCvtCrossesCTAs);
+      }
+      accs = convertLayoutValues(loc, rewriter, op, regLl, tmpLl, accs);
+      lastCvtCrossesCTAs = !mlir::isCvtDimSync(regLl, tmpLl, kBlock);
+
+      std::tie(regLl, accs) =
+          reduceWithinWarps(op, std::move(tmpLl), std::move(accs), rewriter);
+      ++i;
+    }
+    assert(i <= 2 && "expected at most 2 rounds of warp reductions");
+    // Remove the axis dimension, which at this point is of size 1.
+    regLl = removeStandardDim(regLl, axis);
+
+    // Convert to output layout if we didn't fit the warp bases within zero
+    // bases in the tmpLl.
+    if (auto resultTy =
+            dyn_cast<RankedTensorType>(op.getResult()[0].getType())) {
+      auto outputLayout = triton::gpu::toLinearLayout(resultTy);
+      if (regLl != outputLayout) {
+        // Reuse the shmem.
+        sync(rewriter, loc, lastCvtCrossesCTAs);
+        accs =
+            convertLayoutValues(loc, rewriter, op, regLl, outputLayout, accs);
+      }
+    }
+
+    packResults(op, accs, rewriter);
+    return success();
+  }
 
   // Reduce values using a tree of the given arity. Arity=3 generates
   // combine(combine(a, b), c) groups that LLVM folds into ternary

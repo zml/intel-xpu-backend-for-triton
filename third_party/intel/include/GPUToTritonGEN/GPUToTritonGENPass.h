@@ -29,7 +29,8 @@ namespace triton {
 #include "intel/include/GPUToTritonGEN/Passes.h.inc"
 
 void populateGPUToTritonGENConversionPatterns(LLVMTypeConverter &converter,
-                                              RewritePatternSet &patterns);
+                                              RewritePatternSet &patterns,
+                                              bool includeMathPatterns = true);
 
 void configureGPUToTritonGENConversionLegality(ConversionTarget &target);
 
