@@ -211,7 +211,6 @@ struct DpasOperandPattern final : OpRewritePattern<ReduceOp> {
 
   // Intermediate reductions
   static constexpr int finalElementwiseReductionAxis = 0;
-  static constexpr int finalWarpsReductionAxis = 1;
   static constexpr int innerElementwiseReductionAxis = 2;
   static constexpr int outerElementwiseReductionAxis = 4;
 
@@ -274,32 +273,59 @@ struct DpasOperandPattern final : OpRewritePattern<ReduceOp> {
     LLVM_DEBUG(llvm::dbgs() << "Performed initial elementwise reductions: "
                             << operand << "\n");
 
+    // Sub-group transpose: move the reduction (N) axis from lanes into
+    // registers (#blocked5 dim 0). M moves to lanes (+ a small register
+    // remainder).
     operand = convertLayoutForFinalReduction(op, rewriter, operand, encoding);
 
     LLVM_DEBUG(llvm::dbgs()
                << "Converted layout for final reduction: " << operand << "\n");
 
-    operand = reshapeForFinalReduction(op, rewriter, operand, encoding);
+    // Reduce the N axis directly on #blocked5: within-thread over the register
+    // part (dim 0) and across-warps over the warp part (dim 3, size
+    // warpsPerCTA[1]; index 2 after dim 0 is removed).
+    //
+    // We deliberately do NOT first merge the two M sub-dimensions into one
+    // blocked dimension (the previous reshapeForFinalReduction "#blocked6"
+    // step). That merge multiplied sizePerThread/threadsPerWarp across the M
+    // dimensions, yielding a layout on which the within-thread reduce grouped
+    // registers incorrectly and reduced over M instead of N — harmless for
+    // idempotent combiners (max/min) but wrong for additive ones (the softmax
+    // sum), producing NaN/Inf attention output. Reducing #blocked5 directly
+    // keeps the within-register N reduction (the locality win) and is correct
+    // for every combiner.
+    operand = performReduction(op, rewriter, operand,
+                               /*axis=*/finalElementwiseReductionAxis);
+    operand = performReduction(op, rewriter, operand, /*axis=*/2);
 
     LLVM_DEBUG(llvm::dbgs()
-               << "Reshaped for final reduction: " << operand << "\n");
+               << "Final reductions performed: " << operand << "\n");
 
-    operand = performFinalElementwiseReduction(op, rewriter, operand);
+    // operand is now 3-D [repeatCount, repCluster[0], warpsPerCTA[0]] (all M).
+    // Reshape to the 1-D [M] result through a plain blocked layout, then
+    // convert to the original (DPAS-slice) result layout.
+    int64_t mTotal = encoding.getRepeatCount() * encoding.getRepCluster()[0] *
+                     encoding.getWarpsPerCTA()[0];
+    std::array<unsigned, 1> sizePerThread1D{
+        encoding.getRepeatCount() * encoding.getRepCluster()[0] /
+        encoding.getExecutionSize()};
+    std::array<unsigned, 1> threadsPerWarp1D{encoding.getExecutionSize()};
+    std::array<unsigned, 1> warpsPerCTA1D{encoding.getWarpsPerCTA()[0]};
+    std::array<unsigned, 1> order1D{0};
+    CGAEncodingAttr ctaLayout = CGAEncodingAttr::get1CTALayout(getContext(), 1);
+    auto blocked1D = rewriter.getAttr<BlockedEncodingAttr>(
+        sizePerThread1D, threadsPerWarp1D, warpsPerCTA1D, order1D, ctaLayout);
+    auto resultTy = cast<RankedTensorType>(op.getResult().front().getType());
+    auto midTy =
+        RankedTensorType::get({mTotal}, resultTy.getElementType(), blocked1D);
+    operand = ReshapeOp::create(rewriter, op.getLoc(), midTy, operand,
+                                /*allow_reorder=*/true,
+                                /*efficient_layout=*/false);
 
     LLVM_DEBUG(llvm::dbgs()
-               << "Final elementwise reduction performed: " << operand << "\n");
+               << "Reshaped to 1-D result: " << operand << "\n");
 
-    operand = performFinalAcrossWarpsReduction(op, rewriter, operand);
-
-    LLVM_DEBUG(llvm::dbgs() << "Final across-warps reduction performed: "
-                            << operand << "\n");
-
-    operand = reshapeToOriginalType(op, rewriter, operand, encoding);
-
-    LLVM_DEBUG(llvm::dbgs()
-               << "Reshaped to original type: " << operand << "\n");
-
-    operand = convertLayoutToOriginalType(op, rewriter, operand);
+    operand = ConvertLayoutOp::create(rewriter, op.getLoc(), resultTy, operand);
 
     LLVM_DEBUG(llvm::dbgs()
                << "Converted layout to original type: " << operand << "\n");
@@ -420,91 +446,6 @@ private:
                                    static_cast<RankedTensorType>(type), val);
   }
 
-  Value reshapeForFinalReduction(ReduceOp op, PatternRewriter &rewriter,
-                                 Value val,
-                                 DpasEncodingAttr dpasEncoding) const {
-    auto oldType = cast<RankedTensorType>(val.getType());
-    ArrayRef<int64_t> oldShape = oldType.getShape();
-
-    constexpr size_t rank = 4;
-    std::array<int64_t, rank> shape{
-        dpasEncoding.getExecutionSize(),
-        dpasEncoding.getRepeatCount() * dpasEncoding.getRepCluster()[0],
-        dpasEncoding.getWarpsPerCTA()[1], dpasEncoding.getWarpsPerCTA()[0]};
-    std::array<unsigned, rank> sizePerThread{
-        dpasEncoding.getExecutionSize(),
-        dpasEncoding.getRepeatCount() * dpasEncoding.getRepCluster()[0] /
-            dpasEncoding.getExecutionSize(),
-        1, 1};
-    std::array<unsigned, rank> threadsPerWarp{
-        1, dpasEncoding.getExecutionSize(), 1, 1};
-    std::array<unsigned, rank> warpsPerCTA{1, 1,
-                                           dpasEncoding.getWarpsPerCTA()[1],
-                                           dpasEncoding.getWarpsPerCTA()[0]};
-    constexpr std::array<unsigned, rank> order{0, 1, 2, 3};
-    CGAEncodingAttr ctaLayout =
-        CGAEncodingAttr::get1CTALayout(getContext(), rank);
-
-    auto encoding = rewriter.getAttr<BlockedEncodingAttr>(
-        sizePerThread, threadsPerWarp, warpsPerCTA, order, ctaLayout);
-
-    RankedTensorType::Builder type(oldType);
-    type.setShape(shape);
-    type.setEncoding(encoding);
-
-    // Although this is a NOP, we have to pass allow_reorder=true as static
-    // analysis will fail to infer it.
-    return ReshapeOp::create(rewriter, op.getLoc(),
-                             static_cast<RankedTensorType>(type), val,
-                             /*allow_reorder=*/true,
-                             /*efficient_layout=*/true);
-  }
-
-  Value performFinalElementwiseReduction(ReduceOp op, PatternRewriter &rewriter,
-                                         Value val) const {
-    return performReduction(op, rewriter, val,
-                            /*axis=*/finalElementwiseReductionAxis);
-  }
-
-  Value performFinalAcrossWarpsReduction(ReduceOp op, PatternRewriter &rewriter,
-                                         Value val) const {
-    return performReduction(op, rewriter, val,
-                            /*axis=*/finalWarpsReductionAxis);
-  }
-
-  Value reshapeToOriginalType(ReduceOp op, PatternRewriter &rewriter, Value val,
-                              DpasEncodingAttr dpasEncoding) const {
-    RankedTensorType::Builder type(
-        cast<RankedTensorType>(op.getResult().front().getType()));
-
-    constexpr size_t rank = 2;
-    std::array<unsigned, rank> sizePerThread{
-        1, dpasEncoding.getRepeatCount() * dpasEncoding.getRepCluster()[0] /
-               dpasEncoding.getExecutionSize()};
-    std::array<unsigned, rank> threadsPerWarp{1,
-                                              dpasEncoding.getExecutionSize()};
-    std::array<unsigned, rank> warpsPerCTA{dpasEncoding.getWarpsPerCTA()[1],
-                                           dpasEncoding.getWarpsPerCTA()[0]};
-    constexpr std::array<unsigned, rank> order{0, 1};
-    CGAEncodingAttr ctaLayout =
-        CGAEncodingAttr::get1CTALayout(getContext(), rank);
-
-    auto parentEncoding = rewriter.getAttr<BlockedEncodingAttr>(
-        sizePerThread, threadsPerWarp, warpsPerCTA, order, ctaLayout);
-
-    type.setEncoding(SliceEncodingAttr::get(getContext(), 0, parentEncoding));
-
-    return ReshapeOp::create(rewriter, op.getLoc(),
-                             static_cast<RankedTensorType>(type), val,
-                             /*allow_reorder=*/true,
-                             /*efficient_layout=*/true);
-  }
-
-  Value convertLayoutToOriginalType(ReduceOp op, PatternRewriter &rewriter,
-                                    Value val) const {
-    return ConvertLayoutOp::create(rewriter, op.getLoc(),
-                                   op.getResult().front().getType(), val);
-  }
 };
 
 struct TritonIntelGPUOptimizeReductionLocality final
