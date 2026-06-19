@@ -273,14 +273,14 @@ struct DpasOperandPattern final : OpRewritePattern<ReduceOp> {
     LLVM_DEBUG(llvm::dbgs() << "Performed initial elementwise reductions: "
                             << operand << "\n");
 
-    // Sub-group transpose: move the reduction (N) axis from lanes into
-    // registers (#blocked5 dim 0). M moves to lanes (+ a small register
-    // remainder).
     operand = convertLayoutForFinalReduction(op, rewriter, operand, encoding);
 
     LLVM_DEBUG(llvm::dbgs()
                << "Converted layout for final reduction: " << operand << "\n");
 
+    // NOTE: This is a temp fix, it works now but the pass is not used anyway as it is
+    // not the default in the python passes. Enable TRITON_INTEL_OPTIMIZE_REDUCTION_LOCALITY
+    // to use it
     // Reduce the N axis directly on #blocked5: within-thread over the register
     // part (dim 0) and across-warps over the warp part (dim 3, size
     // warpsPerCTA[1]; index 2 after dim 0 is removed).

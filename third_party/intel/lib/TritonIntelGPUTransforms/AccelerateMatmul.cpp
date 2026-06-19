@@ -80,9 +80,21 @@ getWarpsPerTile(Operation *dotOp,
         setAttrOnBOperand(dotOp, attrName, UnitAttr::get(ctx));
         setAttrOnBOperand(op, attrName, UnitAttr::get(ctx));
       }
-      SmallVector<unsigned> ret(shape.size(), 1);
-      ret[0] = numWarps;
-      return ret;
+      // Splitting all warps over the M dimension only pays off when M can
+      // absorb them (large-M prefill attention). For a skinny-M decode dot
+      // (M < numWarps, e.g. M=4 with 8 warps) it leaves most warps idle on the
+      // dot and, worse, pins the dot-operand layout to [numWarps,1] which
+      // mismatches the coalesced 2D-block-load layout — producing many
+      // per-tile cross-warp convert_layouts. Fall back to the balanced
+      // distribution (calculateWarpsPerTile) for those, which both parallelises
+      // N and matches the load layout.
+      size_t rank = shape.size();
+      if (shape[rank - 2] >= static_cast<int64_t>(numWarps)) {
+        SmallVector<unsigned> ret(rank, 1);
+        ret[0] = numWarps;
+        return ret;
+      }
+      break;
     }
   }
 
